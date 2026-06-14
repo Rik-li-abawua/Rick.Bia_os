@@ -1,0 +1,11 @@
+version: '3.9'
+services:
+  api:
+    image: python:3.12
+    working_dir: /app
+    ports:
+      - '8000:8000'
+  chroma:
+    image: chromadb/chroma:latest
+    ports:
+      - '8001:8000'
