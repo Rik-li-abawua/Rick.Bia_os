@@ -1,8 +1,109 @@
 rules_version = '2';
 service cloud.firestore {
- match /databases/{database}/documents {
-  match /{document=**} {
-   allow read, write: if request.auth != null;
+  match /databases/{database}/documents {
+
+    // --- Funciones auxiliares ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function isAdmin() {
+      // Requiere la reclamación personalizada 'admin' (establecer via Admin SDK)
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    // Valida un timestamp server-side (creado por request.time)
+    function isServerTimestamp(field) {
+      return field == request.time;
+    }
+
+    // --- users: solo el usuario o admin puede leer/editar su perfil ---
+    match /users/{userId} {
+      allow read: if isSignedIn() && (isOwner(userId) || isAdmin());
+      allow create: if isSignedIn()
+                    && isOwner(userId)
+                    // Forma mínima y tipos
+                    && request.resource.data.keys().hasAll(['displayName','createdAt'])
+                    && request.resource.data.displayName is string
+                    && request.resource.data.displayName.size() <= 100
+                    && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && (isOwner(userId) || isAdmin())
+                    // No permitir que el cliente cambie el uid/email/createdAt
+                    && (!('email' in request.resource.data) || request.resource.data.email == resource.data.email)
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isAdmin();
+    }
+
+    // --- agents: configuraciones de agentes — solo propietario y admin pueden escribir ---
+    match /agents/{agentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.ownerId == request.auth.uid
+                    && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId)
+                    && request.resource.data.ownerId == resource.data.ownerId
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId);
+    }
+
+    // --- memories: datos privados del usuario ---
+    match /memories/{memoryId} {
+      allow read, write: if isSignedIn() && (isOwner(resource.data.ownerId) || (request.resource != null && request.resource.data.ownerId == request.auth.uid) || isAdmin());
+      // Nota: Las reglas anteriores permiten crear si ownerId==auth.uid y leer/escribir solo por owner/admin.
+    }
+
+    // --- finances: transacciones/finanzas privadas ---
+    match /finances/{financeId} {
+      allow read, write: if isSignedIn() && (resource.data.ownerId == request.auth.uid || request.resource.data.ownerId == request.auth.uid || isAdmin());
+      // Validaciones adicionales pueden añadirse según el esquema (ej. montos positivos, currency codes)
+    }
+
+    // --- passengers (seguimiento): solo usuarios autorizados (owner o admin) ---
+    match /passengers/{passengerId} {
+      allow read: if isSignedIn() && (resource.data.ownerId == request.auth.uid || request.resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isSignedIn() && request.resource.data.ownerId == request.auth.uid && request.resource.data.createdAt == request.time;
+      allow update: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId)
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId);
+    }
+
+    // --- public posts ejemplo: publicar contenido público con validación ---
+    match /posts/{postId} {
+      allow read: if resource.data.published == true || isSignedIn();
+      allow create: if isSignedIn()
+                    && request.resource.data.ownerId == request.auth.uid
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.title is string
+                    && request.resource.data.title.size() <= 300
+                    && request.resource.data.content is string
+                    && request.resource.data.content.size() <= 10000
+                    && (request.resource.data.published is bool);
+      allow update: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId)
+                    && request.resource.data.ownerId == resource.data.ownerId
+                    && request.resource.data.createdAt == resource.data.createdAt;
+      allow delete: if isSignedIn() && (isAdmin() || request.auth.uid == resource.data.ownerId);
+    }
+
+    // --- conversaciones y mensajes privados (ejemplo) ---
+    match /conversations/{convId}/messages/{msgId} {
+      allow create: if isSignedIn()
+                    && request.resource.data.senderId == request.auth.uid
+                    && request.resource.data.createdAt == request.time
+                    && request.resource.data.text is string
+                    && request.resource.data.text.size() <= 5000;
+      allow read: if isSignedIn() && (request.auth.uid == resource.data.senderId || request.auth.uid == resource.data.recipientId || isAdmin());
+      // No permitir updates desde el cliente una vez creado
+      allow update: if false;
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.senderId || isAdmin());
+    }
+
+    // Denegar cualquier otro acceso por defecto
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
- }
 }
